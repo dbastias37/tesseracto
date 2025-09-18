@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Teseracto 3D • App Web Activa (Three.js + Cannon-es)</title>
+  <style>
+    :root { --bg:#0c0c0f; --fg:#f0f0f2; --ui:#1c1f26; --acc:#3ad1ff; --muted:#9aa4b2; }
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; }
+    canvas { display:block; }
+    .hud { position:fixed; inset:0 auto auto 0; padding:12px; pointer-events:none; }
+    .panel { pointer-events:auto; background:rgba(28,31,38,.75); border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px; backdrop-filter: blur(8px); box-shadow:0 6px 30px rgba(0,0,0,.35); }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .btn { background:#262a33; color:#fff; border:none; border-radius:10px; padding:10px 12px; cursor:pointer; font-weight:600; transition:.2s transform ease; }
+    .btn:hover { transform: translateY(-1px); }
+    .btn.secondary{ background:#1f2430; color:var(--muted); }
+    .tag { font-size:12px; color:var(--muted); }
+    .legend { position:fixed; right:12px; bottom:12px; background:rgba(28,31,38,.75); border:1px solid rgba(255,255,255,.06); border-radius:12px; padding:12px; max-width:340px; backdrop-filter: blur(8px); }
+    .legend h4 { margin:0 0 6px 0; font-size:14px; letter-spacing:.3px; color:#d5d9e0; }
+    .legend p { margin:0; font-size:12px; color:#9aa4b2; line-height:1.4; }
+    .title { position:fixed; left:50%; transform:translateX(-50%); top:10px; background:rgba(28,31,38,.6); padding:8px 14px; border-radius:999px; border:1px solid rgba(255,255,255,.06); font-weight:700; letter-spacing:.3px; }
+  </style>
+
+  <!-- Polyfill para import maps en navegadores que no lo soportan nativamente -->
+  <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.min.js"></script>
+
+  <!-- Import Map: resuelve los bare specifiers 'three' y 'three/addons/*' en el navegador -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+      "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="title">Teseracto 3D • Three.js + Cannon-es</div>
+  <div class="hud">
+    <div class="panel">
+      <div class="row" style="gap:10px;">
+        <button id="btn-rot" class="btn">⟳ Rotación ON</button>
+        <button id="btn-ball" class="btn secondary">● Soltar esfera</button>
+        <button id="btn-reset" class="btn secondary">↺ Reset</button>
+        <span class="tag">Arrastra para orbitar • Rueda para zoom</span>
+        <span id="tests" class="tag" style="margin-left:8px"></span>
+      </div>
+    </div>
+  </div>
+  <div class="legend">
+    <h4>Física y colisiones</h4>
+    <p>La sala, el pedestal y los objetos tienen colisiones físicas (Cannon‑es). Pulsa <b>Soltar esfera</b> o la tecla <b>Espacio</b> para lanzar una bola desde la cámara y probar rebotes.</p>
+  </div>
+
+  <!-- Código principal en módulos ES -->
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import * as CANNON from 'cannon-es';
+
+    // ====== ESCENA BÁSICA ======
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0c0c0f);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(6, 4, 10);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // Luces
+    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x202028, 0.6);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(6, 10, 4);
+    dir.castShadow = true;
+    dir.shadow.mapSize.set(2048, 2048);
+    scene.add(dir);
+
+    // ====== MUNDO FÍSICO ======
+    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+    world.broadphase = new CANNON.SAPBroadphase(world);
+    world.allowSleep = true;
+
+    const defaultMat = new CANNON.Material('default');
+    const contact = new CANNON.ContactMaterial(defaultMat, defaultMat, { friction: 0.3, restitution: 0.3 });
+    world.addContactMaterial(contact);
+
+    // ====== SALA (habitación con 6 paredes) ======
+    const roomSize = 20;
+    const s = roomSize / 2;
+
+    // Visual: caja invertida para ver paredes
+    const roomGeo = new THREE.BoxGeometry(roomSize, roomSize, roomSize);
+    const roomMat = new THREE.MeshStandardMaterial({ color: 0x151922, side: THREE.BackSide, roughness: 0.9, metalness: 0.0 });
+    const roomMesh = new THREE.Mesh(roomGeo, roomMat);
+    roomMesh.receiveShadow = true;
+    scene.add(roomMesh);
+
+    // Física: 6 planos posicionados por Euler
+    let wallCount = 0;
+    function addPlane(quatEulerX, quatEulerY, quatEulerZ, px, py, pz){
+      const shape = new CANNON.Plane();
+      const body = new CANNON.Body({ mass: 0, material: defaultMat });
+      body.addShape(shape);
+      body.quaternion.setFromEuler(quatEulerX, quatEulerY, quatEulerZ, 'XYZ');
+      body.position.set(px, py, pz);
+      world.addBody(body);
+      wallCount++;
+      return body;
+    }
+    // Por defecto CANNON.Plane tiene normal +Z. Rotamos para cada pared y colocamos en ±s
+    addPlane(-Math.PI/2, 0, 0, 0, -s, 0); // suelo (normal +Y)
+    addPlane(Math.PI/2, 0, 0, 0, s, 0);  // techo (normal -Y)
+    addPlane(0, Math.PI/2, 0, -s, 0, 0); // pared izq (normal +X)
+    addPlane(0, -Math.PI/2, 0, s, 0, 0); // pared der (normal -X)
+    addPlane(0, 0, 0, 0, 0, -s);         // pared fondo (normal +Z)
+    addPlane(0, Math.PI, 0, 0, 0, s);    // pared frente (normal -Z)
+
+    // ====== PEDESTAL ======
+    const pedestalHeight = 0.7;
+    const pedestalRadius = 1.1;
+    const pedestalGeo = new THREE.CylinderGeometry(pedestalRadius, pedestalRadius, pedestalHeight, 48);
+    const pedestalMat = new THREE.MeshStandardMaterial({ color: 0x394154, roughness: 0.6, metalness: 0.05 });
+    const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
+    pedestal.castShadow = true; pedestal.receiveShadow = true;
+    pedestal.position.set(0, pedestalHeight/2, 0);
+    scene.add(pedestal);
+    // Física pedestal (cilindro aproximado)
+    const pedestalBody = new CANNON.Body({ mass: 0, material: defaultMat });
+    pedestalBody.addShape(new CANNON.Cylinder(pedestalRadius, pedestalRadius, pedestalHeight, 32));
+    pedestalBody.position.set(0, pedestalHeight/2, 0);
+    world.addBody(pedestalBody);
+
+    // ====== TESERACTO (cubo 4D proyectado como aristas) ======
+    const tesseract = new THREE.Group();
+
+    function wireCube(size, color){
+      const g = new THREE.BoxGeometry(size, size, size);
+      const e = new THREE.EdgesGeometry(g);
+      const m = new THREE.LineBasicMaterial({ color, linewidth:2, transparent:true, opacity:0.95 });
+      const l = new THREE.LineSegments(e, m);
+      return { mesh: l, geometry: g };
+    }
+
+    const outerSize = 2.4;
+    const innerSize = 1.2;
+    const outer = wireCube(outerSize, 0x3ad1ff);
+    const inner = wireCube(innerSize, 0x9bff9e);
+
+    // Conexiones vértice a vértice
+    const connectors = new THREE.Group();
+    function uniqueVerticesFromBox(size){
+      const s = size/2;
+      return [
+        new THREE.Vector3(-s,-s,-s), new THREE.Vector3(s,-s,-s), new THREE.Vector3(s,s,-s), new THREE.Vector3(-s,s,-s),
+        new THREE.Vector3(-s,-s, s), new THREE.Vector3(s,-s, s), new THREE.Vector3(s, s, s), new THREE.Vector3(-s, s, s),
+      ];
+    }
+    const outerVerts = uniqueVerticesFromBox(outerSize);
+    const innerVerts = uniqueVerticesFromBox(innerSize);
+
+    const connMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.6 });
+    for(let i=0;i<8;i++){
+      const geo = new THREE.BufferGeometry().setFromPoints([innerVerts[i], outerVerts[i]]);
+      connectors.add(new THREE.Line(geo, connMat));
+    }
+
+    tesseract.add(outer.mesh);
+    tesseract.add(inner.mesh);
+    tesseract.add(connectors);
+
+    // Posición sobre el pedestal
+    tesseract.position.set(0, pedestalHeight + 0.9, 0);
+    scene.add(tesseract);
+
+    // Cuerpo físico aproximado del tesseracto
+    const tesseractBody = new CANNON.Body({ mass: 0, material: defaultMat });
+    tesseractBody.addShape(new CANNON.Box(new CANNON.Vec3(outerSize/2, outerSize/2, outerSize/2)));
+    tesseractBody.position.set(0, pedestalHeight + 0.9, 0);
+    world.addBody(tesseractBody);
+
+    // ====== INTERACCIÓN ======
+    let autoRotate = true;
+    const dynamic = []; // objetos dinámicos (mallas) asociadas a cuerpos CANNON
+
+    function dropBall(){
+      const radius = 0.18 + Math.random()*0.15;
+      const sphereGeo = new THREE.SphereGeometry(radius, 24, 18);
+      const sphereMat = new THREE.MeshStandardMaterial({ color: 0xb7c0d1, roughness: 0.6, metalness: 0.05 });
+      const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+      sphere.castShadow = true; sphere.receiveShadow = true;
+
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      const start = camera.position.clone().add(dir.clone().multiplyScalar(0.5));
+      sphere.position.copy(start);
+      scene.add(sphere);
+
+      const body = new CANNON.Body({ mass: 0.6, material: defaultMat });
+      body.addShape(new CANNON.Sphere(radius));
+      body.position.set(start.x, start.y, start.z);
+      const impulse = dir.clone().multiplyScalar(6 + Math.random()*3);
+      world.addBody(body);
+      body.velocity.set(impulse.x, impulse.y+2, impulse.z);
+
+      sphere.userData.body = body;
+      dynamic.push(sphere);
+    }
+
+    function resetScene(){
+      for(const m of dynamic){
+        scene.remove(m);
+        if(m.userData.body) world.removeBody(m.userData.body);
+      }
+      dynamic.length = 0;
+      camera.position.set(6,4,10);
+      controls.target.set(0, pedestalHeight + 0.9, 0);
+      controls.update();
+      autoRotate = true; updateRotBtn();
+    }
+
+    function updateRotBtn(){ rotBtn.textContent = autoRotate ? '⟳ Rotación ON' : '⟳ Rotación OFF'; }
+
+    // ====== LOOP ======
+    let last = performance.now();
+    function animate(){
+      const now = performance.now();
+      const dt = Math.min(1/30, (now - last) / 1000); // clamp dt
+      last = now;
+
+      world.step(1/60, dt, 3);
+
+      for(const m of dynamic){
+        const b = m.userData.body; if(!b) continue;
+        m.position.copy(b.position);
+        m.quaternion.copy(b.quaternion);
+      }
+
+      if(autoRotate){
+        tesseract.rotation.x += 0.01;
+        tesseract.rotation.y += 0.013;
+      }
+      tesseractBody.position.set(tesseract.position.x, tesseract.position.y, tesseract.position.z);
+      tesseractBody.quaternion.set(tesseract.quaternion.x, tesseract.quaternion.y, tesseract.quaternion.z, tesseract.quaternion.w);
+
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // ====== UI ======
+    const rotBtn = document.getElementById('btn-rot');
+    const ballBtn = document.getElementById('btn-ball');
+    const resetBtn = document.getElementById('btn-reset');
+    rotBtn.addEventListener('click', ()=>{ autoRotate = !autoRotate; updateRotBtn(); });
+    ballBtn.addEventListener('click', dropBall);
+    resetBtn.addEventListener('click', resetScene);
+    window.addEventListener('keydown', (e)=>{ if(e.code==='Space'){ e.preventDefault(); dropBall(); } });
+
+    window.addEventListener('resize', ()=>{
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ====== AUTOTESTS ======
+    const testEl = document.getElementById('tests');
+    const tests = [];
+    function assert(name, cond){ tests.push({name, pass: !!cond}); if(!cond) console.error('Test FAILED:', name); }
+    function summary(){
+      const pass = tests.filter(t=>t.pass).length; const total = tests.length;
+      if(testEl) testEl.textContent = `• Tests: ${pass}/${total} OK`;
+    }
+    // Tests existentes
+    assert('OrbitControls disponible', typeof OrbitControls === 'function');
+    assert('Three r160+ cargado', parseInt(THREE.REVISION, 10) >= 160);
+    assert('CANNON.World disponible', typeof CANNON.World === 'function');
+    assert('Conectores = 8', connectors.children.length === 8);
+    // Nuevos tests
+    assert('Canvas renderizado', !!document.querySelector('canvas'));
+    assert('Grupo Teseracto con 3 hijos', tesseract.children.length === 3);
+    assert('Paredes físicas = 6', wallCount === 6);
+    assert('Pedestal estático (mass=0)', pedestalBody.mass === 0);
+    const before = dynamic.length; dropBall(); assert('dropBall() crea esfera', dynamic.length === before + 1);
+    summary();
+  </script>
+</body>
+</html>
