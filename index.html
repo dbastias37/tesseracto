@@ -99,7 +99,7 @@
 
     // Visual: caja invertida para ver paredes
     const roomGeo = new THREE.BoxGeometry(roomSize, roomSize, roomSize);
-    const roomMat = new THREE.MeshStandardMaterial({ color: 0x151922, side: THREE.BackSide, roughness: 0.9, metalness: 0.0 });
+    const roomMat = new THREE.MeshStandardMaterial({ color: 0xffffff, side: THREE.BackSide, roughness: 0.9, metalness: 0.0 });
     const roomMesh = new THREE.Mesh(roomGeo, roomMat);
     roomMesh.receiveShadow = true;
     scene.add(roomMesh);
@@ -143,10 +143,11 @@
     const tesseract = new THREE.Group();
 
     function wireCube(size, color){
-      const g = new THREE.BoxGeometry(size, size, size);
+      const g = new THREE.BoxGeometry(1, 1, 1);
       const e = new THREE.EdgesGeometry(g);
       const m = new THREE.LineBasicMaterial({ color, linewidth:2, transparent:true, opacity:0.95 });
       const l = new THREE.LineSegments(e, m);
+      l.scale.setScalar(size);
       return { mesh: l, geometry: g };
     }
 
@@ -164,18 +165,39 @@
         new THREE.Vector3(-s,-s, s), new THREE.Vector3(s,-s, s), new THREE.Vector3(s, s, s), new THREE.Vector3(-s, s, s),
       ];
     }
-    const outerVerts = uniqueVerticesFromBox(outerSize);
-    const innerVerts = uniqueVerticesFromBox(innerSize);
-
+    const baseVerts = uniqueVerticesFromBox(1);
     const connMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent:true, opacity:0.6 });
+    const connectorData = [];
     for(let i=0;i<8;i++){
-      const geo = new THREE.BufferGeometry().setFromPoints([innerVerts[i], outerVerts[i]]);
+      const geo = new THREE.BufferGeometry();
+      const positions = new Float32Array(6);
+      const attribute = new THREE.BufferAttribute(positions, 3);
+      geo.setAttribute('position', attribute);
       connectors.add(new THREE.Line(geo, connMat));
+      connectorData.push({ positions, attribute, base: baseVerts[i], geometry: geo });
+    }
+
+    function updateTesseractGeometry(outerScale, innerScale){
+      outer.mesh.scale.setScalar(outerScale);
+      inner.mesh.scale.setScalar(innerScale);
+      for(const data of connectorData){
+        const base = data.base;
+        data.positions[0] = base.x * innerScale;
+        data.positions[1] = base.y * innerScale;
+        data.positions[2] = base.z * innerScale;
+        data.positions[3] = base.x * outerScale;
+        data.positions[4] = base.y * outerScale;
+        data.positions[5] = base.z * outerScale;
+        data.attribute.needsUpdate = true;
+        data.geometry.computeBoundingSphere();
+      }
     }
 
     tesseract.add(outer.mesh);
     tesseract.add(inner.mesh);
     tesseract.add(connectors);
+
+    updateTesseractGeometry(outerSize, innerSize);
 
     // Posición sobre el pedestal
     tesseract.position.set(0, pedestalHeight + 0.9, 0);
@@ -190,6 +212,7 @@
     // ====== INTERACCIÓN ======
     let autoRotate = true;
     const dynamic = []; // objetos dinámicos (mallas) asociadas a cuerpos CANNON
+    const cycleDuration = 8000;
 
     function dropBall(){
       const radius = 0.18 + Math.random()*0.15;
@@ -243,6 +266,12 @@
         m.position.copy(b.position);
         m.quaternion.copy(b.quaternion);
       }
+
+      const cycleProgress = ((now % cycleDuration) / cycleDuration);
+      const swap = 0.5 - 0.5 * Math.cos(cycleProgress * Math.PI * 2);
+      const currentOuterScale = THREE.MathUtils.lerp(outerSize, innerSize, swap);
+      const currentInnerScale = THREE.MathUtils.lerp(innerSize, outerSize, swap);
+      updateTesseractGeometry(currentOuterScale, currentInnerScale);
 
       if(autoRotate){
         tesseract.rotation.x += 0.01;
